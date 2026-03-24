@@ -2,7 +2,7 @@
 
 Smart JavaScript asset discovery tool for recon and bug bounty.
 
-Takes discovered JavaScript URLs and generates realistic hidden asset candidates — source maps, unhashed bundles, chunk siblings, framework companions — based on patterns in the URLs you already have. No blind wordlists.
+Takes discovered JavaScript URLs and generates hidden asset candidates based on patterns observed in the target — build hash, chunk convention, framework fingerprint. No blind wordlists, no confidence scores, just pattern-aware mutations.
 
 **Requirements:** Python 3.7+ (stdlib only, no installs)
 
@@ -14,9 +14,9 @@ You feed it JS URLs you already found during recon. The tool works in two phases
 
 **1. Analysis** — Parses every URL to extract structure: content hashes, chunk numbers, separators, and framework fingerprints (Next.js, Nuxt, Webpack, Vite, CRA). It also cross-analyses your whole input to confirm a shared build hash and detect missing chunk IDs (e.g. chunks 100–200 exist but 150 is missing → 150 likely exists too).
 
-**2. Mutation** — For each URL it runs targeted strategies based on what it found: strips the hash, appends `.map`, removes `.min`, generates adjacent/gap chunk IDs with the confirmed build hash, adds framework companions (runtime, polyfills, common), and suggests named siblings.
+**2. Mutation** — For each URL it runs targeted strategies based on what it found: strips the hash, appends `.map`, removes `.min`, generates adjacent/gap chunk IDs with the confirmed build hash, adds framework companions (runtime, polyfills, common), suggests named siblings, and probes for sensitive functionality bundles (payments, admin, auth, export, etc.) using the target's exact naming convention.
 
-Every candidate gets a confidence score (0–100). Source maps score 95, hash removals 85, speculative guesses like `.bak` files score 18. The result is a ranked list of URLs tied to patterns you actually observed — not a generic wordlist.
+Every candidate is derived from what the target actually uses — not guessed from a generic wordlist.
 
 ---
 
@@ -39,7 +39,6 @@ python3 jsreaper.py -f urls.txt
 | `-u URL` | Single JS URL |
 | `-f FILE` | File of JS URLs, one per line |
 | `-o FILE` | Save results to file |
-| `--min-score N` | Only show candidates with confidence ≥ N (0–100) |
 | `--categories X,Y` | Filter by category (see below) |
 | `--plain` | URLs only — pipe-safe output |
 | `--json` | Structured JSON output |
@@ -51,49 +50,33 @@ python3 jsreaper.py -f urls.txt
 
 | Category | What it finds |
 |---|---|
-| `SOURCE_MAP` | `.js.map` files — expose source code and paths |
-| `HASH` | Dehashed / non-minified variants |
-| `COMPANION` | Webpack runtime, polyfills, common chunks |
-| `CHUNK` | Adjacent and gap-fill chunk IDs |
+| `SOURCE_MAP` | `.js.map` files — expose source code, paths, and comments |
+| `SENSITIVE` | Hidden bundles for payments, admin, auth, export, webhooks, etc. |
+| `COMPANION` | Webpack runtime, polyfills, framework-specific chunks |
+| `HASH` | Dehashed and non-minified variants |
 | `SIBLING` | Other named bundles at the same path |
-| `ENV` | Dev/staging/debug build variants |
-| `BACKUP` | `.bak`, `.old`, versioned leftovers |
-| `DIR` | Directory listing probes |
+| `CHUNK` | Adjacent numeric chunks and confirmed sequence gaps |
 
 ---
 
 ## Examples
 
 ```bash
-# High-value only — source maps and companions, score 80+
-python3 jsreaper.py -f urls.txt --min-score 80 --categories SOURCE_MAP,COMPANION
-
 # Pipe directly to httpx to probe live
 python3 jsreaper.py -f urls.txt --plain | httpx -silent -mc 200
+
+# Source maps and sensitive bundles only
+python3 jsreaper.py -f urls.txt --categories SOURCE_MAP,SENSITIVE
 
 # Save full JSON report
 python3 jsreaper.py -f urls.txt --json -o results.json
 
-# Save clean URL list of high-confidence candidates
-python3 jsreaper.py -f urls.txt --plain --min-score 70 -o candidates.txt
+# Save clean URL list
+python3 jsreaper.py -f urls.txt --plain -o candidates.txt
+
+# Feed chunk candidates directly to ffuf
+python3 jsreaper.py -f urls.txt --categories CHUNK --plain | ffuf -u FUZZ -w -
 ```
-
----
-
-## Output (default grouped view)
-
-```
-  Input    : 1106 URL(s)
-  Hash     : a3f4b2c1 (8 chars, sep='.')
-  Generated: 48255 candidates
-
-  Source Maps  [1095 candidates]
-  [ 95]  https://app.example.com/main.a3f4b2c1.chunk.js.map
-         Source map for JS bundle (exposes source code, paths, comments)
-  ...
-```
-
-Each candidate shows a confidence score (0–100) and a reason. Higher score = more likely to exist.
 
 ---
 
