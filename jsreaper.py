@@ -38,12 +38,14 @@ Usage
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import json
 import argparse
 import textwrap
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional, Set, Tuple
 from urllib.parse import urlparse
@@ -1123,11 +1125,11 @@ def generate_candidates(
     Run all mutation strategies against all parsed URLs.
     Returns a deduplicated, sorted list of Candidates.
     """
-    ctx     = build_context(parsed_list)
-    seen    = set()
-    results: List[Candidate] = []
+    ctx        = build_context(parsed_list)
+    input_urls = {j.original_url.rstrip("/") for j in parsed_list}
 
-    for js in parsed_list:
+    def _process(js: ParsedJS) -> List[Candidate]:
+        out = []
         for strategy_fn in _STRATEGIES:
             try:
                 for cand in strategy_fn(js, ctx):
@@ -1135,17 +1137,25 @@ def generate_candidates(
                         continue
                     if categories and cand.category not in categories:
                         continue
-                    # Normalise URL for deduplication
-                    norm = cand.url.rstrip("/").lower()
-                    if norm in seen:
-                        continue
-                    # Skip if it's identical to an input URL
-                    if cand.url.rstrip("/") in {j.original_url.rstrip("/") for j in parsed_list}:
-                        continue
-                    seen.add(norm)
-                    results.append(cand)
+                    out.append(cand)
             except Exception:
                 pass  # Never crash on a single strategy failure
+        return out
+
+    workers = min(32, (os.cpu_count() or 4) * 2)
+    seen:    set            = set()
+    results: List[Candidate] = []
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for batch in ex.map(_process, parsed_list):
+            for cand in batch:
+                norm = cand.url.rstrip("/").lower()
+                if norm in seen:
+                    continue
+                if cand.url.rstrip("/") in input_urls:
+                    continue
+                seen.add(norm)
+                results.append(cand)
 
     # Sort: confidence descending, then category, then URL
     results.sort(key=lambda c: (-c.confidence, c.category, c.url))
