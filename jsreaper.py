@@ -34,7 +34,7 @@ from urllib.parse import urlparse
 from pathlib import PurePosixPath
 
 
-TOOL_VERSION = "2.0.0"
+TOOL_VERSION = "2.1.0"
 
 # ── Vocabulary constants ───────────────────────────────────────────────────────
 
@@ -115,30 +115,109 @@ SENSITIVE_WORDS: List[str] = [
     "payment", "payments", "billing", "checkout", "invoice", "invoices",
     "transaction", "transactions", "wallet", "subscription", "subscriptions",
     "refund", "payout", "payouts", "pricing", "coupon", "discount",
+    "finance", "financial", "bank", "banking", "crypto", "stripe",
+    "paypal", "braintree", "revenue", "ledger",
     # Admin / internal panels
     "admin", "administrator", "internal", "backoffice", "back-office",
-    "management", "staff", "operator", "superuser", "panel", "console",
-    "impersonate", "masquerade", "override",
+    "management", "manage", "staff", "operator", "superuser", "panel",
+    "console", "impersonate", "masquerade", "override", "backdoor",
+    "control-panel", "admin-panel", "admin-api", "internal-api",
     # Auth / identity
     "auth", "authentication", "authorization", "oauth", "sso", "mfa",
     "2fa", "token", "session", "jwt", "saml", "passkey", "recovery",
+    "login", "logout", "register", "forgot-password", "reset-password",
+    "change-password", "signup", "verify", "verification",
     # API / integrations
-    "api", "graphql", "webhook", "webhooks", "integration", "integrations",
-    "connector", "sync", "bridge",
+    "api", "api-client", "api-config", "api-keys", "graphql",
+    "webhook", "webhooks", "integration", "integrations",
+    "connector", "sync", "bridge", "socket", "websocket",
     # Data / export
     "export", "import", "upload", "download", "report", "reports",
     "audit", "logs", "logger", "telemetry", "gdpr", "data-export",
+    "analytics", "tracking", "segment", "amplitude", "mixpanel",
+    "gtm", "sentry", "datadog", "newrelic",
     # User / access management
     "users", "accounts", "permissions", "roles", "acl", "rbac",
-    "invite", "invitation",
-    # Config / feature control
-    "config", "configuration", "feature-flags", "flags",
-    "secrets", "keys", "credentials",
+    "invite", "invitation", "customer", "customers",
+    "tenant", "tenants", "organization", "organisations",
+    "employee", "employees", "team", "teams",
+    # Config / secrets
+    "config", "configuration", "feature-flags", "flags", "env",
+    "secrets", "secret", "keys", "credentials", "private",
     # Sensitive operations
     "debug", "diagnostics", "migrate", "migration", "seed",
-    "delete", "bulk", "purge", "reset", "restore",
-    # Enterprise
-    "enterprise", "license", "compliance",
+    "delete", "bulk", "purge", "reset", "restore", "hidden",
+    # Enterprise / compliance
+    "enterprise", "license", "compliance", "hipaa", "pci", "gdpr",
+]
+
+# Feature / module / component names for probing non-sensitive but hidden bundles
+FEATURE_WORDS: List[str] = [
+    # App sections
+    "dashboard", "notifications", "messaging", "calendar", "scheduler",
+    "workflow", "automation", "marketplace", "store", "catalog",
+    "inventory", "shipping", "onboarding", "wizard",
+    # Technical modules
+    "router", "store", "cache", "worker", "service-worker",
+    "queue", "cronjob", "cron", "stream", "polling",
+    # UI components
+    "modal", "sidebar", "navbar", "header", "footer",
+    "table", "chart", "graph", "editor", "viewer", "player",
+    # Common app features
+    "search", "filter", "pagination", "sorting", "upload",
+    "preview", "thumbnail", "gallery", "carousel",
+    "comments", "reviews", "ratings", "feedback",
+    "share", "social", "embed",
+]
+
+# Environment qualifiers inserted into filenames to reveal dev/debug builds
+ENV_QUALIFIERS: List[str] = [
+    "dev", "development",
+    "debug",
+    "staging", "stg",
+    "test", "testing",
+    "qa",
+    "local",
+    "uat",
+    "sandbox",
+]
+
+# Suffixes for backup / leftover file detection
+# Applied both as JS qualifiers (basename.old.js) and raw file extensions (file.js.bak)
+BACKUP_QUALIFIERS: List[str] = [
+    "bak", "old", "orig", "original", "backup",
+    "copy", "tmp", "temp", "save",
+]
+
+BACKUP_EXTENSIONS: List[str] = [
+    ".bak", ".old", ".orig", ".bk",
+    ".gz", ".zip", ".tar",
+    ".tmp", ".temp",
+    ".swp",        # vim swap
+    "~",           # editor temp (appended directly, no dot)
+]
+
+# Legacy / versioned naming qualifiers
+LEGACY_QUALIFIERS: List[str] = [
+    "v1", "v2", "v3",
+    "old", "legacy", "previous", "deprecated", "archive",
+]
+
+# Alternative asset directories — tried when the source URL is clearly in a JS asset path.
+# Only fires when the current directory contains known JS asset path segments.
+ALT_ASSET_DIRS: List[str] = [
+    "/js",
+    "/assets",
+    "/static/js",
+    "/dist/js",
+    "/dist",
+    "/build/js",
+    "/build",
+    "/public/js",
+    "/out/js",
+    "/scripts",
+    "/resources/js",
+    "/app/js",
 ]
 
 # Tokens that look hash-like but must never be treated as content hashes.
@@ -158,6 +237,10 @@ _NOT_HASH: Set[str] = {
 _NOT_HASH.update(w.lower().replace("-", "").replace("_", "") for w in ROUTE_NAMES)
 _NOT_HASH.update(w.lower().replace("-", "").replace("_", "") for w in SIBLING_BASES)
 _NOT_HASH.update(w.lower().replace("-", "").replace("_", "") for w in SENSITIVE_WORDS)
+_NOT_HASH.update(w.lower().replace("-", "").replace("_", "") for w in FEATURE_WORDS)
+_NOT_HASH.update(q.lower() for q in ENV_QUALIFIERS)
+_NOT_HASH.update(q.lower() for q in BACKUP_QUALIFIERS)
+_NOT_HASH.update(q.lower() for q in LEGACY_QUALIFIERS)
 
 
 # ── Data structures ────────────────────────────────────────────────────────────
@@ -702,24 +785,246 @@ def mut_sensitive_probes(js: ParsedJS, ctx: dict) -> Iterator[Candidate]:
 
 
 def mut_extension_variants(js: ParsedJS, ctx: dict) -> Iterator[Candidate]:
-    """Toggle the .chunk decorator — some bundlers serve files both ways."""
+    """
+    Toggle decorators and module format suffixes.
+    Covers: .chunk toggle, .bundle.js, .min.js, .umd.js, .esm.js, .cjs.js
+    """
     if js.extension == ".js.map" or js.chunk_num is not None:
         return
-    hp = (js.hash_sep + js.hash_val) if js.hash_val else ""
+    hp  = (js.hash_sep + js.hash_val) if js.hash_val else ""
+    base = js.basename + hp
+
+    # .chunk toggle
     if js.has_chunk:
         yield Candidate(
-            url        = _url_in_dir(js, js.basename + hp + ".js"),
+            url        = _url_in_dir(js, base + ".js"),
             strategy   = "extension_variant",
             category   = "HASH",
-            reason     = f"Variant without .chunk: {js.basename + hp}.js",
+            reason     = f"Without .chunk: {base}.js",
             source_url = js.original_url,
         )
     else:
         yield Candidate(
-            url        = _url_in_dir(js, js.basename + hp + ".chunk.js"),
+            url        = _url_in_dir(js, base + ".chunk.js"),
             strategy   = "extension_variant",
             category   = "HASH",
-            reason     = f"Chunk variant: {js.basename + hp}.chunk.js",
+            reason     = f"Chunk variant: {base}.chunk.js",
+            source_url = js.original_url,
+        )
+
+    # .bundle.js — Rollup and some custom pipelines use this decorator
+    yield Candidate(
+        url        = _url_in_dir(js, base + ".bundle.js"),
+        strategy   = "extension_variant",
+        category   = "HASH",
+        reason     = f"Bundle variant: {base}.bundle.js",
+        source_url = js.original_url,
+    )
+
+    # Module format variants — UMD/ESM/CJS builds often exist alongside the main build
+    for fmt in ("umd", "esm", "cjs"):
+        yield Candidate(
+            url        = _url_in_dir(js, js.basename + "." + fmt + ".js"),
+            strategy   = "extension_variant",
+            category   = "HASH",
+            reason     = f"{fmt.upper()} module format: {js.basename}.{fmt}.js",
+            source_url = js.original_url,
+        )
+
+
+def mut_feature_probes(js: ParsedJS, ctx: dict) -> Iterator[Candidate]:
+    """
+    Probe for hidden feature / module / component bundles using the target's
+    naming pattern. Covers non-sensitive but potentially undocumented sections
+    like dashboards, schedulers, editors, and background workers.
+    Also tries common prefixes: feature-<name>, module-<name>, component-<name>.
+    """
+    if js.chunk_num is not None:
+        return
+    h     = ctx.get("confirmed_hash")
+    sep   = ctx.get("confirmed_hash_sep") or js.hash_sep or "."
+    dec   = ".chunk" if js.has_chunk else ""
+    known = ctx.get("known_basenames", set())
+
+    lazy_prefix = ("lazy" + js.basename[4]) if js.is_lazy and len(js.basename) > 4 else None
+
+    for word in FEATURE_WORDS:
+        if word.lower() in known:
+            continue
+
+        candidates_names = [word]
+        # Also try prefixed variants
+        for prefix in ("feature", "module", "component"):
+            candidates_names.append(f"{prefix}-{word}")
+
+        for name in candidates_names:
+            if lazy_prefix:
+                base = lazy_prefix + name
+                if h:
+                    yield Candidate(
+                        url        = _url_in_dir(js, base + sep + h + dec + ".js"),
+                        strategy   = "feature_probe",
+                        category   = "FEATURE",
+                        reason     = f"Feature lazy bundle: {name}",
+                        source_url = js.original_url,
+                    )
+                yield Candidate(
+                    url        = _url_in_dir(js, base + dec + ".js"),
+                    strategy   = "feature_probe",
+                    category   = "FEATURE",
+                    reason     = f"Feature lazy bundle: {name} (no hash)",
+                    source_url = js.original_url,
+                )
+
+            if h:
+                yield Candidate(
+                    url        = _url_in_dir(js, name + sep + h + dec + ".js"),
+                    strategy   = "feature_probe",
+                    category   = "FEATURE",
+                    reason     = f"Feature bundle: {name}",
+                    source_url = js.original_url,
+                )
+            yield Candidate(
+                url        = _url_in_dir(js, name + ".js"),
+                strategy   = "feature_probe",
+                category   = "FEATURE",
+                reason     = f"Feature bundle: {name}",
+                source_url = js.original_url,
+            )
+
+
+def mut_env_variants(js: ParsedJS, ctx: dict) -> Iterator[Candidate]:
+    """
+    Generate environment-specific variants: dev, debug, staging, test, qa, etc.
+    Development and staging builds are often left on servers and expose
+    unminified code, debug output, internal endpoints, and commented logic.
+    """
+    if js.extension == ".js.map":
+        return
+    hp  = (js.hash_sep + js.hash_val) if js.hash_val else ""
+    dec = ".chunk" if js.has_chunk else ""
+
+    for qual in ENV_QUALIFIERS:
+        # Skip if already contains this qualifier
+        if qual in js.basename.lower() or qual in js.stem.lower():
+            continue
+
+        # basename.QUALIFIER.js
+        yield Candidate(
+            url        = _url_in_dir(js, js.basename + "." + qual + ".js"),
+            strategy   = "env_variant",
+            category   = "ENV",
+            reason     = f"Env variant: {js.basename}.{qual}.js",
+            source_url = js.original_url,
+        )
+        # QUALIFIER/basename.js — env as subdirectory prefix
+        sub_path = str(PurePosixPath(js.directory) / qual / js.filename)
+        env_url  = (f"{js.scheme}://{js.host}{sub_path}" if js.host else sub_path)
+        yield Candidate(
+            url        = env_url,
+            strategy   = "env_variant",
+            category   = "ENV",
+            reason     = f"Env subdirectory: /{qual}/{js.filename}",
+            source_url = js.original_url,
+        )
+
+
+def mut_backup_variants(js: ParsedJS, ctx: dict) -> Iterator[Candidate]:
+    """
+    Probe for backup and temporary copies of JS files left on the server.
+    Covers: .bak, .old, .orig, .bk, .gz, .zip, .tmp, .swp, ~ suffixes,
+    and qualifier-in-stem variants (basename.bak.js, basename_old.js).
+    """
+    if js.extension == ".js.map":
+        return
+
+    # Raw file extension appended to full filename: main.a3f4b2c1.chunk.js.bak
+    for ext in BACKUP_EXTENSIONS:
+        suffix = ext if ext.startswith(".") else ext  # "~" has no dot
+        url = _url_in_dir(js, js.filename + suffix)
+        yield Candidate(
+            url        = url,
+            strategy   = "backup_variant",
+            category   = "BACKUP",
+            reason     = f"Backup copy: {js.filename}{suffix}",
+            source_url = js.original_url,
+        )
+
+    # Qualifier injected into stem: basename.bak.js, basename.old.js
+    for qual in BACKUP_QUALIFIERS:
+        yield Candidate(
+            url        = _url_in_dir(js, js.basename + "." + qual + ".js"),
+            strategy   = "backup_variant",
+            category   = "BACKUP",
+            reason     = f"Backup qualifier: {js.basename}.{qual}.js",
+            source_url = js.original_url,
+        )
+        yield Candidate(
+            url        = _url_in_dir(js, js.basename + "_" + qual + ".js"),
+            strategy   = "backup_variant",
+            category   = "BACKUP",
+            reason     = f"Backup qualifier: {js.basename}_{qual}.js",
+            source_url = js.original_url,
+        )
+
+
+def mut_legacy_variants(js: ParsedJS, ctx: dict) -> Iterator[Candidate]:
+    """
+    Generate older / legacy naming variants.
+    Targets versioned filenames (v1, v2, v3), legacy suffixes,
+    and numeric version suffixes (basename-1.js, basename.2.js).
+    Legacy files are often kept alongside new builds during migration periods.
+    """
+    if js.extension == ".js.map" or js.chunk_num is not None:
+        return
+
+    for qual in LEGACY_QUALIFIERS:
+        if qual in js.basename.lower():
+            continue
+        # basename.legacy.js / basename-v1.js
+        for sep in (".", "-", "_"):
+            yield Candidate(
+                url        = _url_in_dir(js, js.basename + sep + qual + ".js"),
+                strategy   = "legacy_variant",
+                category   = "LEGACY",
+                reason     = f"Legacy variant: {js.basename}{sep}{qual}.js",
+                source_url = js.original_url,
+            )
+
+    # Numeric version suffix: basename-1.js, basename.2.js
+    for n in (1, 2, 3):
+        for sep in (".", "-"):
+            yield Candidate(
+                url        = _url_in_dir(js, js.basename + sep + str(n) + ".js"),
+                strategy   = "legacy_variant",
+                category   = "LEGACY",
+                reason     = f"Versioned variant: {js.basename}{sep}{n}.js",
+                source_url = js.original_url,
+            )
+
+
+def mut_directory_variants(js: ParsedJS, ctx: dict) -> Iterator[Candidate]:
+    """
+    Try the same filename in alternate JS asset directories.
+    Only fires when the current URL is clearly inside a JS asset directory
+    (contains /js/, /static/, /dist/, /build/, /assets/), making the
+    alternate paths structurally plausible rather than random guesses.
+    """
+    trigger_segments = {"js", "static", "dist", "build", "assets", "scripts", "public"}
+    path_parts = set(js.directory.lower().strip("/").split("/"))
+    if not path_parts & trigger_segments:
+        return
+
+    for alt_dir in ALT_ASSET_DIRS:
+        if alt_dir.rstrip("/") == js.directory.rstrip("/"):
+            continue
+        new_path = alt_dir.rstrip("/") + "/" + js.filename
+        url = (f"{js.scheme}://{js.host}{new_path}" if js.host else new_path)
+        yield Candidate(
+            url        = url,
+            strategy   = "dir_variant",
+            category   = "DIR",
+            reason     = f"Same file in alt dir: {alt_dir}",
             source_url = js.original_url,
         )
 
@@ -736,10 +1041,19 @@ _STRATEGIES = [
     mut_sibling_bases,
     mut_route_siblings,
     mut_sensitive_probes,
+    mut_feature_probes,
     mut_extension_variants,
+    mut_env_variants,
+    mut_legacy_variants,
+    mut_backup_variants,
+    mut_directory_variants,
 ]
 
-_CATEGORY_ORDER = ["SOURCE_MAP", "SENSITIVE", "COMPANION", "HASH", "SIBLING", "CHUNK"]
+_CATEGORY_ORDER = [
+    "SOURCE_MAP", "SENSITIVE", "FEATURE",
+    "COMPANION", "HASH", "SIBLING", "CHUNK",
+    "ENV", "LEGACY", "BACKUP", "DIR",
+]
 
 
 def generate_candidates(
@@ -799,10 +1113,15 @@ _ANSI = {
 _CAT_COLOR = {
     "SOURCE_MAP": "red",
     "SENSITIVE":  "magenta",
+    "FEATURE":    "magenta",
     "COMPANION":  "yellow",
     "HASH":       "cyan",
     "SIBLING":    "green",
     "CHUNK":      "blue",
+    "ENV":        "yellow",
+    "LEGACY":     "dim",
+    "BACKUP":     "dim",
+    "DIR":        "dim",
 }
 
 BANNER = r"""
